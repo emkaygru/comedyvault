@@ -17,30 +17,91 @@
     <header>
       <button id="back-btn" aria-label="Go back">‹</button>
       <h1><span>Comedy</span>Vault</h1>
+      <button id="search-btn" aria-label="Search" onclick="navigate('search')">🔍</button>
     </header>
 
     <main>
-      <div id="home-screen"   class="screen"></div>
-      <div id="list-screen"   class="screen"></div>
-      <div id="editor-screen" class="screen"></div>
-      <div id="detail-screen" class="screen"></div>
-      <div id="search-screen" class="screen"></div>
+      <div id="home-screen"       class="screen"></div>
+      <div id="list-screen"       class="screen"></div>
+      <div id="editor-screen"     class="screen"></div>
+      <div id="detail-screen"     class="screen"></div>
+      <div id="search-screen"     class="screen"></div>
+      <div id="characters-screen" class="screen"></div>
+      <div id="char-editor-screen"class="screen"></div>
+      <div id="profile-screen"    class="screen"></div>
+      <div id="prompts-screen"    class="screen"></div>
     </main>
 
-    <button id="fab" aria-label="New entry">+</button>
+    <!-- FAB Speed Dial -->
+    <div id="fab-backdrop"></div>
+    <div id="fab-wrap">
+      <div id="fab-menu" aria-hidden="true">
+        <div class="fab-item" data-action="voice">
+          <span class="fab-label">Voice Memo</span>
+          <button class="fab-btn" style="background:#94a3b8">🗣️</button>
+        </div>
+        <div class="fab-item" data-action="character">
+          <span class="fab-label">Character</span>
+          <button class="fab-btn" style="background:#fb923c">👤</button>
+        </div>
+        <div class="fab-item" data-action="bit">
+          <span class="fab-label">Bit</span>
+          <button class="fab-btn" style="background:#e879f9">🎭</button>
+        </div>
+        <div class="fab-item" data-action="tiktok">
+          <span class="fab-label">TikTok</span>
+          <button class="fab-btn" style="background:#f87171">🎬</button>
+        </div>
+        <div class="fab-item" data-action="idea">
+          <span class="fab-label">Idea</span>
+          <button class="fab-btn" style="background:#60a5fa">💡</button>
+        </div>
+        <div class="fab-item" data-action="joke">
+          <span class="fab-label">Joke</span>
+          <button class="fab-btn" style="background:#f5c518; color:#000">😂</button>
+        </div>
+        <div class="fab-item" data-action="story">
+          <span class="fab-label">Story</span>
+          <button class="fab-btn" style="background:#34d399; color:#000">📖</button>
+        </div>
+        <div class="fab-item" data-action="memory">
+          <span class="fab-label">Memory</span>
+          <button class="fab-btn" style="background:#a78bfa">🧠</button>
+        </div>
+      </div>
+      <button id="fab" aria-label="Add new">+</button>
+    </div>
+
+    <!-- Voice Modal -->
+    <div id="voice-modal" aria-hidden="true">
+      <div id="voice-modal-inner">
+        <div id="voice-title">🎙️ Speak your idea</div>
+        <div id="voice-transcript" placeholder="Your words will appear here…"></div>
+        <div id="voice-controls">
+          <button id="voice-stop-btn" onclick="stopVoice()">⏹ Stop</button>
+          <button id="voice-use-btn" onclick="useVoiceTranscript()">✍️ Use This</button>
+          <button id="voice-clear-btn" onclick="clearVoice()">↺ Redo</button>
+        </div>
+        <button id="voice-close-btn" onclick="closeVoiceModal()">✕</button>
+      </div>
+    </div>
 
     <nav id="bottom-nav" role="navigation" aria-label="Main navigation">
       <button data-screen="home" aria-label="Home">
         <span class="icon">🏠</span>
         <span>Home</span>
       </button>
-      <button data-screen="search" aria-label="Search">
-        <span class="icon">🔍</span>
-        <span>Search</span>
+      <button data-screen="prompts" aria-label="Prompt Me">
+        <span class="icon">🎤</span>
+        <span>Prompts</span>
       </button>
-      <button data-screen="editor" aria-label="New entry">
-        <span class="icon">✏️</span>
-        <span>New</span>
+      <button data-screen="characters" aria-label="People">
+        <span class="icon">👥</span>
+        <span>People</span>
+      </button>
+      <button data-screen="profile" aria-label="Your Story">
+        <span class="icon">🪞</span>
+        <span>My Story</span>
       </button>
     </nav>
   </div>
