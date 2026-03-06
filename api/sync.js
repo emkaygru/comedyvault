@@ -1,4 +1,14 @@
-const { kv } = require('@vercel/kv');
+const { sql } = require('@vercel/postgres');
+
+async function ensureTable() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS cv_sync (
+      token      TEXT PRIMARY KEY,
+      data       JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
+}
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -6,8 +16,8 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  if (!process.env.KV_REST_API_URL) {
-    return res.status(503).json({ error: 'Sync not configured — link a Vercel KV database in your project.' });
+  if (!process.env.POSTGRES_URL) {
+    return res.status(503).json({ error: 'Database not configured.' });
   }
 
   const token = (req.method === 'GET'
@@ -19,31 +29,36 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: 'Invalid sync token.' });
   }
 
-  const key = `cv:${token}`;
+  try {
+    await ensureTable();
 
-  if (req.method === 'GET') {
-    try {
-      const data = await kv.get(key);
-      return res.status(200).json(data || { entries: [], chars: [], profile: {} });
-    } catch (e) {
-      return res.status(500).json({ error: e.message });
+    if (req.method === 'GET') {
+      const { rows } = await sql`SELECT data FROM cv_sync WHERE token = ${token}`;
+      return res.status(200).json(
+        rows[0]?.data || { entries: [], chars: [], profile: {} }
+      );
     }
-  }
 
-  if (req.method === 'POST') {
-    try {
+    if (req.method === 'POST') {
       const { entries, chars, profile } = req.body || {};
-      await kv.set(key, {
+      const data = {
         entries: entries || [],
-        chars: chars || [],
+        chars:   chars   || [],
         profile: profile || {},
         updatedAt: new Date().toISOString(),
-      });
+      };
+      await sql`
+        INSERT INTO cv_sync (token, data)
+        VALUES (${token}, ${JSON.stringify(data)})
+        ON CONFLICT (token) DO UPDATE
+          SET data = ${JSON.stringify(data)}, updated_at = NOW()
+      `;
       return res.status(200).json({ ok: true });
-    } catch (e) {
-      return res.status(500).json({ error: e.message });
     }
-  }
 
-  return res.status(405).json({ error: 'Method not allowed' });
+    return res.status(405).json({ error: 'Method not allowed' });
+  } catch (e) {
+    console.error('sync error:', e);
+    return res.status(500).json({ error: e.message });
+  }
 };
