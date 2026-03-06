@@ -144,13 +144,14 @@ function loadEntries() {
 }
 function saveEntries(entries) { localStorage.setItem(STORE_KEY, JSON.stringify(entries)); syncPush(); }
 
-function createEntry({ category, title, content, tags, status }) {
+function createEntry({ category, title, content, tags, status, imageUrl }) {
   const entries = loadEntries();
   const entry = {
     id: crypto.randomUUID(), category,
     title: title.trim(), content: content.trim(),
     tags: tags.map(t => t.trim().toLowerCase()).filter(Boolean),
     status: status || 'raw',
+    imageUrl: imageUrl || null,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   };
   entries.unshift(entry);
@@ -158,7 +159,7 @@ function createEntry({ category, title, content, tags, status }) {
   return entry;
 }
 
-function updateEntry(id, { category, title, content, tags, status }) {
+function updateEntry(id, { category, title, content, tags, status, imageUrl }) {
   const entries = loadEntries();
   const idx = entries.findIndex(e => e.id === id);
   if (idx === -1) return null;
@@ -167,6 +168,7 @@ function updateEntry(id, { category, title, content, tags, status }) {
     title: title.trim(), content: content.trim(),
     tags: tags.map(t => t.trim().toLowerCase()).filter(Boolean),
     status: status || entries[idx].status || 'raw',
+    imageUrl: imageUrl !== undefined ? imageUrl : entries[idx].imageUrl,
     updatedAt: new Date().toISOString(),
   };
   saveEntries(entries);
@@ -246,6 +248,131 @@ function esc(str) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Markdown Renderer ─────────────────────────────────────────────────────────
+
+function md_inline(text) {
+  return text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/_(.+?)_/g,'<em>$1</em>');
+}
+
+function renderMd(raw) {
+  if (!raw) return '';
+  const lines = raw.split('\n');
+  const out = [];
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('### '))     out.push(`<h3>${md_inline(trimmed.slice(4))}</h3>`);
+    else if (trimmed.startsWith('## ')) out.push(`<h2>${md_inline(trimmed.slice(3))}</h2>`);
+    else if (trimmed.startsWith('# '))  out.push(`<h1>${md_inline(trimmed.slice(2))}</h1>`);
+    else if (trimmed.startsWith('- ') || trimmed.startsWith('* '))
+      out.push(`<li>${md_inline(trimmed.slice(2))}</li>`);
+    else if (trimmed === '')            out.push('<br>');
+    else                                out.push(`<p>${md_inline(trimmed)}</p>`);
+  }
+  return out.join('').replace(/(<li>[\s\S]*?<\/li>)+/g, m => `<ul>${m}</ul>`);
+}
+
+// ── Format Toolbar ────────────────────────────────────────────────────────────
+
+function fmtToolbar(textareaId) {
+  return `<div class="fmt-toolbar">
+    <button class="fmt-btn" onclick="wrapText('${textareaId}','**','**')" title="Bold"><strong>B</strong></button>
+    <button class="fmt-btn" onclick="wrapText('${textareaId}','*','*')" title="Italic"><em>I</em></button>
+    <button class="fmt-btn" onclick="insertLinePrefix('${textareaId}','## ')" title="Heading">H2</button>
+    <button class="fmt-btn" onclick="insertLinePrefix('${textareaId}','### ')" title="Sub-heading">H3</button>
+    <button class="fmt-btn" onclick="insertLinePrefix('${textareaId}','- ')" title="Bullet">• List</button>
+    <button class="fmt-btn" onclick="insertAtCursor('${textareaId}','\n')" title="Line break">↵ Break</button>
+  </div>`;
+}
+
+function wrapText(id, before, after) {
+  const ta = document.getElementById(id);
+  if (!ta) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const sel = ta.value.slice(start, end) || 'text';
+  ta.value = ta.value.slice(0, start) + before + sel + after + ta.value.slice(end);
+  ta.selectionStart = start + before.length;
+  ta.selectionEnd   = start + before.length + sel.length;
+  ta.focus();
+}
+
+function insertLinePrefix(id, prefix) {
+  const ta = document.getElementById(id);
+  if (!ta) return;
+  const start = ta.selectionStart;
+  const lineStart = ta.value.lastIndexOf('\n', start - 1) + 1;
+  ta.value = ta.value.slice(0, lineStart) + prefix + ta.value.slice(lineStart);
+  ta.selectionStart = ta.selectionEnd = lineStart + prefix.length;
+  ta.focus();
+}
+
+function insertAtCursor(id, text) {
+  const ta = document.getElementById(id);
+  if (!ta) return;
+  const start = ta.selectionStart;
+  ta.value = ta.value.slice(0, start) + text + ta.value.slice(start);
+  ta.selectionStart = ta.selectionEnd = start + text.length;
+  ta.focus();
+}
+
+// ── Image Upload ──────────────────────────────────────────────────────────────
+
+async function uploadImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const b64 = ev.target.result.split(',')[1];
+      try {
+        const r = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: `${Date.now()}-${file.name.replace(/[^a-z0-9.]/gi, '-')}`,
+            contentType: file.type,
+            data: b64,
+          }),
+        });
+        const d = await r.json();
+        if (d.error) reject(new Error(d.error)); else resolve(d.url);
+      } catch (e) { reject(e); }
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function openImagePicker() {
+  document.getElementById('ed-img-input')?.click();
+}
+
+async function handleImageSelect(input) {
+  const file = input.files[0];
+  if (!file) return;
+  showToast('Uploading image…');
+  try {
+    const url = await uploadImage(file);
+    state.editorImageUrl = url;
+    const wrap = document.getElementById('ed-img-preview-wrap');
+    if (wrap) {
+      wrap.innerHTML = `<div class="entry-img-preview-wrap">
+        <img src="${esc(url)}" class="entry-img-preview" alt="Attached image">
+        <button class="img-remove-btn" onclick="removeEditorImage()">✕</button>
+      </div>`;
+    }
+    showToast('Image uploaded ✓');
+  } catch (e) {
+    showToast('Upload failed: ' + e.message);
+  }
+}
+
+function removeEditorImage() {
+  state.editorImageUrl = null;
+  const wrap = document.getElementById('ed-img-preview-wrap');
+  if (wrap) wrap.innerHTML = '';
+}
+
 function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -268,6 +395,7 @@ const state = {
   editorTags: [],
   editorCat: 'memory',
   editorStatus: 'raw',
+  editorImageUrl: null,
   _editorInit: false,
   editCharId: null,
   charTags: [],
@@ -318,6 +446,7 @@ function handleFabAction(action) {
   } else {
     state.editorTags = [];
     state._editorInit = false;
+    state.editorImageUrl = null;
     navigate('editor', { editId: null, editorCat: action, editorStatus: 'raw' });
   }
 }
@@ -679,6 +808,9 @@ function renderEditor() {
     ? 'Setup → what\'s the premise?\nEscalation → push the absurdity\nPunchline → the button'
     : 'Write it all out…';
 
+  const imgUrl = state.editorImageUrl || (entry?.imageUrl) || null;
+  if (!state.editorImageUrl && entry?.imageUrl) state.editorImageUrl = entry.imageUrl;
+
   return `
     <div class="editor-form">
       <div class="form-group">
@@ -692,7 +824,22 @@ function renderEditor() {
       </div>
       <div class="form-group">
         <label>Content</label>
+        ${fmtToolbar('ed-content')}
         <textarea id="ed-content" placeholder="${placeholder}">${entry ? esc(entry.content) : ''}</textarea>
+      </div>
+      <div class="form-group">
+        <label>Image</label>
+        <div class="img-upload-row">
+          <button class="img-upload-btn" onclick="openImagePicker()">📷 Attach Image</button>
+          <input type="file" id="ed-img-input" accept="image/*"
+            onchange="handleImageSelect(this)">
+        </div>
+        <div id="ed-img-preview-wrap">
+          ${imgUrl ? `<div class="entry-img-preview-wrap">
+            <img src="${esc(imgUrl)}" class="entry-img-preview" alt="Attached image">
+            <button class="img-remove-btn" onclick="removeEditorImage()">✕</button>
+          </div>` : ''}
+        </div>
       </div>
       <div class="form-group">
         <label>Status</label>
@@ -749,7 +896,8 @@ function renderDetail() {
     </div>
     <div class="detail-title">${esc(entry.title)}</div>
     ${tags ? `<div class="ec-tags" style="margin-bottom:16px">${tags}</div>` : ''}
-    <div class="detail-body">${esc(entry.content)}</div>
+    ${entry.imageUrl ? `<img src="${esc(entry.imageUrl)}" class="detail-img" alt="Entry image">` : ''}
+    <div class="detail-body">${renderMd(entry.content)}</div>
     <div class="detail-actions">
       <button class="btn-edit" onclick="openEditor('${entry.id}')">✏️ Edit</button>
       <button class="btn-edit" onclick="confirmDelete('${entry.id}')">🗑 Delete</button>
@@ -1120,6 +1268,7 @@ function saveEntry() {
   const data = {
     category: state.editorCat, title, content,
     tags: state.editorTags, status: state.editorStatus,
+    imageUrl: state.editorImageUrl || null,
   };
 
   if (state.editId) {
@@ -1145,6 +1294,7 @@ function confirmDelete(id) {
 function openEditor(id) {
   state.editorTags = [];
   state._editorInit = false;
+  state.editorImageUrl = null;
   navigate('editor', { editId: id });
 }
 
@@ -1258,6 +1408,277 @@ function saveApiKey() {
   }
 }
 
+// ── Swipe Card Deck ───────────────────────────────────────────────────────────
+
+const SWIPE_YESNO = [
+  'Can you make this stranger?',
+  'Does this feel true to you?',
+  'Have you told this story out loud before?',
+  'Is there a bigger laugh hiding in here?',
+  'Would your mom be horrified?',
+  'Could this open a set?',
+  'Is there a callback opportunity here?',
+  'Is the punchline in the wrong place?',
+  'Can you cut the first 30%?',
+  'Does this need a character?',
+  'Have you fully committed to the bit?',
+  'Is there a real emotion underneath this?',
+];
+
+const SWIPE_FILLIN = [
+  'The weirdest part was ___',
+  'Nobody talks about how ___ it is to ___',
+  'I realized I was the problem when ___',
+  'My ___ would describe me as ___',
+  'The real joke is that ___',
+  'It sounds fake but ___',
+  "I've never told anyone that ___",
+  'Everyone does this but nobody admits ___',
+  'The version of me that ___ is still out there somewhere',
+  'My ___ era was defined by ___',
+];
+
+let swipePool = [];
+let swipeIdx  = 0;
+
+function buildSwipePool() {
+  const pool = [];
+  loadEntries().forEach(e => pool.push({ type: 'entry', entry: e }));
+  loadChars().forEach(c => pool.push({ type: 'char', char: c }));
+  SWIPE_YESNO.forEach(q => pool.push({ type: 'yesno', text: q }));
+  SWIPE_FILLIN.forEach(t => pool.push({ type: 'fillin', text: t }));
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool;
+}
+
+function renderSwipeCard(card) {
+  if (!card) return `
+    <div class="swipe-card swipe-empty" id="swipe-card">
+      <div class="swipe-card-inner" style="text-align:center;gap:16px">
+        <div class="swipe-type-label">All Done!</div>
+        <div class="swipe-card-text">You've gone through everything.<br>Shuffle for another round.</div>
+        <button class="btn-save" style="margin-top:16px"
+          onclick="swipePool=buildSwipePool();swipeIdx=0;document.getElementById('swipe-container').innerHTML=renderSwipeCard(swipePool[0]);initSwipeGestures()">
+          🔀 Shuffle Again
+        </button>
+      </div>
+    </div>`;
+
+  if (card.type === 'entry') {
+    const col = catColor(card.entry.category);
+    const preview = card.entry.content.slice(0, 220) + (card.entry.content.length > 220 ? '…' : '');
+    return `
+      <div class="swipe-card" id="swipe-card">
+        <div class="swipe-card-inner">
+          <div class="swipe-type-label" style="color:var(--${col})">${catIcon(card.entry.category)} ${catLabel(card.entry.category)}</div>
+          <div class="swipe-card-title">${esc(card.entry.title)}</div>
+          <div class="swipe-card-text">${esc(preview)}</div>
+          <div class="swipe-hint-labels">
+            <span class="swipe-hint">← Skip</span>
+            <span class="swipe-hint">⭐ Star ↑</span>
+            <span class="swipe-hint">↓ Use</span>
+            <span class="swipe-hint">Develop →</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  if (card.type === 'char') {
+    const desc = card.char.descriptors.slice(0,3).join(', ');
+    return `
+      <div class="swipe-card" id="swipe-card">
+        <div class="swipe-card-inner">
+          <div class="swipe-type-label" style="color:var(--memory)">👤 Character</div>
+          <div class="swipe-card-title">${esc(card.char.name)}</div>
+          <div class="swipe-card-text">${esc(card.char.relationship)}${desc ? ' · ' + esc(desc) : ''}</div>
+          <div class="swipe-hint-labels">
+            <span class="swipe-hint">← Skip</span>
+            <span class="swipe-hint">Write About →</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  if (card.type === 'yesno') {
+    return `
+      <div class="swipe-card swipe-card-prompt" id="swipe-card">
+        <div class="swipe-card-inner">
+          <div class="swipe-type-label" style="color:var(--idea)">💬 Yes or No?</div>
+          <div class="swipe-card-big">${esc(card.text)}</div>
+          <div class="swipe-hint-labels">
+            <span class="swipe-hint">← No</span>
+            <span class="swipe-hint">Yes →</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  if (card.type === 'fillin') {
+    return `
+      <div class="swipe-card swipe-card-prompt" id="swipe-card">
+        <div class="swipe-card-inner">
+          <div class="swipe-type-label" style="color:var(--bit)">✏️ Fill In</div>
+          <div class="swipe-card-big">${esc(card.text)}</div>
+          <div class="swipe-hint-labels">
+            <span class="swipe-hint">← Skip</span>
+            <span class="swipe-hint">Write →</span>
+          </div>
+        </div>
+      </div>`;
+  }
+  return '';
+}
+
+function renderSwipe() {
+  if (!swipePool.length) swipePool = buildSwipePool();
+  const card = swipePool[swipeIdx];
+  const progress = swipeIdx < swipePool.length
+    ? `${swipeIdx + 1} of ${swipePool.length}`
+    : `Done! ${swipePool.length} cards`;
+  return `
+    <div class="swipe-progress">${progress}</div>
+    <div class="swipe-container" id="swipe-container">
+      ${renderSwipeCard(card)}
+    </div>
+    <div class="swipe-actions">
+      <button class="swipe-action-btn" onclick="swipeAction('left')"  title="Skip">←</button>
+      <button class="swipe-action-btn" onclick="swipeAction('up')"    title="Star">⭐</button>
+      <button class="swipe-action-btn" onclick="swipeAction('down')"  title="Use as Prompt">📝</button>
+      <button class="swipe-action-btn" onclick="swipeAction('right')" title="Develop">→</button>
+    </div>`;
+}
+
+function swipeAdvance(dir) {
+  const container = document.getElementById('swipe-container');
+  const cardEl    = document.getElementById('swipe-card');
+  if (cardEl) {
+    const cls = { left: 'swipe-out-left', right: 'swipe-out-right', up: 'swipe-out-up', down: 'swipe-out-down' }[dir];
+    cardEl.classList.add(cls);
+  }
+  swipeIdx = Math.min(swipeIdx + 1, swipePool.length);
+  const prog = document.querySelector('.swipe-progress');
+  if (prog) {
+    prog.textContent = swipeIdx < swipePool.length
+      ? `${swipeIdx + 1} of ${swipePool.length}`
+      : `Done! ${swipePool.length} cards`;
+  }
+  setTimeout(() => {
+    if (container) container.innerHTML = renderSwipeCard(swipePool[swipeIdx]);
+    initSwipeGestures();
+  }, 290);
+}
+
+function swipeAction(dir) {
+  const card = swipePool[swipeIdx];
+  if (!card) return;
+
+  if (dir === 'up' && card.type === 'entry') {
+    const entries = loadEntries();
+    const i = entries.findIndex(e => e.id === card.entry.id);
+    if (i !== -1) { entries[i].status = 'ready'; saveEntries(entries); showToast('⭐ Starred as Ready!'); }
+    swipeAdvance(dir);
+    return;
+  }
+
+  if (dir === 'down') {
+    if (card.type === 'entry') {
+      state.editorTags = []; state._editorInit = false;
+      navigate('editor', { editId: null, editorCat: card.entry.category, editorStatus: 'developing' });
+      setTimeout(() => {
+        const ta = document.getElementById('ed-content');
+        if (ta) ta.value = `Based on: ${card.entry.title}\n\n`;
+      }, 60);
+      return;
+    }
+    if (card.type === 'yesno' || card.type === 'fillin') {
+      state.editorTags = []; state._editorInit = false;
+      navigate('editor', { editId: null, editorCat: 'idea', editorStatus: 'raw' });
+      setTimeout(() => {
+        const ta = document.getElementById('ed-content');
+        if (ta) ta.value = card.text + '\n\n';
+      }, 60);
+      return;
+    }
+  }
+
+  if (dir === 'right') {
+    if (card.type === 'entry') { navigate('detail', { detailId: card.entry.id }); return; }
+    if (card.type === 'char') {
+      state.editorTags = []; state._editorInit = false;
+      navigate('editor', { editId: null, editorCat: 'memory', editorStatus: 'raw' });
+      setTimeout(() => {
+        const ta = document.getElementById('ed-content');
+        if (ta) ta.value = `About ${card.char.name}: `;
+      }, 60);
+      return;
+    }
+    if (card.type === 'yesno' || card.type === 'fillin') {
+      state.editorTags = []; state._editorInit = false;
+      navigate('editor', { editId: null, editorCat: 'idea', editorStatus: 'raw' });
+      setTimeout(() => {
+        const ta = document.getElementById('ed-content');
+        if (ta) ta.value = card.text + '\n\n';
+      }, 60);
+      return;
+    }
+  }
+
+  swipeAdvance(dir);
+}
+
+function initSwipeGestures() {
+  const card = document.getElementById('swipe-card');
+  if (!card || card.classList.contains('swipe-empty')) return;
+
+  let startX = 0, startY = 0, dragging = false;
+
+  function onStart(x, y) { startX = x; startY = y; dragging = true; }
+
+  function onMove(x, y) {
+    if (!dragging) return;
+    const dx = x - startX, dy = y - startY;
+    card.style.transform  = `translate(${dx}px,${dy}px) rotate(${dx * 0.035}deg)`;
+    card.style.transition = 'none';
+    if (Math.abs(dx) > Math.abs(dy)) {
+      card.style.boxShadow = dx > 40
+        ? '0 8px 40px rgba(52,211,153,0.35), inset 0 1px 0 rgba(255,255,255,0.1)'
+        : dx < -40 ? '0 8px 40px rgba(248,113,113,0.35), inset 0 1px 0 rgba(255,255,255,0.1)'
+        : '';
+    }
+  }
+
+  function onEnd(x, y) {
+    if (!dragging) return;
+    dragging = false;
+    card.style.transition  = '';
+    card.style.boxShadow   = '';
+    const dx = x - startX, dy = y - startY;
+    const T = 80;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      if      (dx >  T) swipeAction('right');
+      else if (dx < -T) swipeAction('left');
+      else card.style.transform = '';
+    } else {
+      if      (dy < -T) swipeAction('up');
+      else if (dy >  T) swipeAction('down');
+      else card.style.transform = '';
+    }
+  }
+
+  card.addEventListener('touchstart', e => { const t = e.touches[0]; onStart(t.clientX, t.clientY); }, { passive: true });
+  card.addEventListener('touchmove',  e => { const t = e.touches[0]; onMove(t.clientX, t.clientY); },  { passive: true });
+  card.addEventListener('touchend',   e => { const t = e.changedTouches[0]; onEnd(t.clientX, t.clientY); });
+  card.addEventListener('mousedown',  e => onStart(e.clientX, e.clientY));
+
+  const onMM = e => { if (dragging) onMove(e.clientX, e.clientY); };
+  const onMU = e => { if (dragging) onEnd(e.clientX, e.clientY); };
+  document.addEventListener('mousemove', onMM);
+  document.addEventListener('mouseup',   onMU, { once: false });
+}
+
 // ── Main Render ───────────────────────────────────────────────────────────────
 
 const SCREEN_CFG = {
@@ -1270,6 +1691,7 @@ const SCREEN_CFG = {
   'character-editor':{ el: 'char-editor-screen', fn: renderCharacterEditor, title: () => state.editCharId ? 'Edit Person' : 'Add Person', back: true, fab: false, nav: null },
   profile:          { el: 'profile-screen',      fn: renderProfile,         title: () => '🪞 My Story', back: false, fab: false, nav: 'profile' },
   prompts:          { el: 'prompts-screen',      fn: renderPrompts,         title: () => '🎤 Prompt Me', back: false, fab: false, nav: 'prompts' },
+  swipe:            { el: 'swipe-screen',        fn: renderSwipe,           title: () => '🃏 Card Deck', back: false, fab: false, nav: 'swipe'   },
 };
 
 function renderApp() {
@@ -1282,6 +1704,7 @@ function renderApp() {
   if (activeEl) {
     activeEl.innerHTML = cfg.fn();
     activeEl.classList.add('active');
+    if (state.screen === 'swipe') initSwipeGestures();
   }
 
   // Header
