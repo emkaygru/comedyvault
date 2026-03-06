@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "dependencies": {
-    "@vercel/kv": "^3.0.0"
+    "@vercel/postgres": "^0.10.0"
   }
 }
