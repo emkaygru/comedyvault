@@ -1,8 +1,79 @@
 // ── ComedyVault App ──────────────────────────────────────────────────────────
 
-const STORE_KEY  = 'comedyvault_entries';
-const CHARS_KEY  = 'comedyvault_characters';
-const PROFILE_KEY = 'comedyvault_profile';
+const STORE_KEY      = 'comedyvault_entries';
+const CHARS_KEY      = 'comedyvault_characters';
+const PROFILE_KEY    = 'comedyvault_profile';
+const SYNC_TOKEN_KEY = 'cv_sync_token';
+
+// ── Cloud Sync ────────────────────────────────────────────────────────────────
+
+function getSyncToken() {
+  let token = localStorage.getItem(SYNC_TOKEN_KEY);
+  if (!token) {
+    token = crypto.randomUUID();
+    localStorage.setItem(SYNC_TOKEN_KEY, token);
+  }
+  return token;
+}
+
+let _syncDebounce = null;
+function syncPush() {
+  clearTimeout(_syncDebounce);
+  _syncDebounce = setTimeout(async () => {
+    const token = localStorage.getItem(SYNC_TOKEN_KEY);
+    if (!token) return;
+    try {
+      await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          entries: loadEntries(),
+          chars:   loadChars(),
+          profile: loadProfile(),
+        }),
+      });
+    } catch (e) {
+      console.warn('Sync push failed:', e);
+    }
+  }, 2000);
+}
+
+async function syncPull() {
+  const token = localStorage.getItem(SYNC_TOKEN_KEY);
+  if (!token) return false;
+  try {
+    const r = await fetch(`/api/sync?token=${encodeURIComponent(token)}`);
+    if (!r.ok) return false;
+    const data = await r.json();
+    if (data.error) return false;
+    if (Array.isArray(data.entries)) localStorage.setItem(STORE_KEY,   JSON.stringify(data.entries));
+    if (Array.isArray(data.chars))   localStorage.setItem(CHARS_KEY,   JSON.stringify(data.chars));
+    if (data.profile && typeof data.profile === 'object')
+      localStorage.setItem(PROFILE_KEY, JSON.stringify(data.profile));
+    return true;
+  } catch (e) {
+    console.warn('Sync pull failed:', e);
+    return false;
+  }
+}
+
+async function applySyncToken(newToken) {
+  newToken = (newToken || '').trim();
+  if (!newToken || newToken.length < 10) { showToast('Invalid token'); return; }
+  localStorage.setItem(SYNC_TOKEN_KEY, newToken);
+  showToast('Pulling from server…');
+  const ok = await syncPull();
+  renderApp();
+  showToast(ok ? 'Synced! ✓' : 'Connected — no data yet');
+}
+
+function copySyncToken() {
+  const token = getSyncToken();
+  navigator.clipboard.writeText(token)
+    .then(() => showToast('Token copied ✓'))
+    .catch(() => showToast(token));
+}
 
 const CATEGORIES = {
   memory: { label: 'Memories', icon: '🧠', color: 'memory' },
@@ -71,7 +142,7 @@ function loadEntries() {
   try { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); }
   catch { return []; }
 }
-function saveEntries(entries) { localStorage.setItem(STORE_KEY, JSON.stringify(entries)); }
+function saveEntries(entries) { localStorage.setItem(STORE_KEY, JSON.stringify(entries)); syncPush(); }
 
 function createEntry({ category, title, content, tags, status }) {
   const entries = loadEntries();
@@ -120,7 +191,7 @@ function loadChars() {
   try { return JSON.parse(localStorage.getItem(CHARS_KEY) || '[]'); }
   catch { return []; }
 }
-function saveChars(chars) { localStorage.setItem(CHARS_KEY, JSON.stringify(chars)); }
+function saveChars(chars) { localStorage.setItem(CHARS_KEY, JSON.stringify(chars)); syncPush(); }
 
 function createChar({ name, relationship, descriptors, notes }) {
   const chars = loadChars();
@@ -158,7 +229,7 @@ function loadProfile() {
   try { return JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}'); }
   catch { return {}; }
 }
-function saveProfile(data) { localStorage.setItem(PROFILE_KEY, JSON.stringify(data)); }
+function saveProfile(data) { localStorage.setItem(PROFILE_KEY, JSON.stringify(data)); syncPush(); }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -858,6 +929,33 @@ function renderProfile() {
           Get one at console.anthropic.com → API Keys.
         </div>
       </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="profile-section">
+      <div class="section-title">☁️ Cloud Sync</div>
+      <div class="profile-field">
+        <label>Your Sync Token</label>
+        <div class="api-key-wrap">
+          <input type="text" id="p-sync-token" value="${esc(getSyncToken())}" readonly
+            style="font-family:monospace;font-size:13px;letter-spacing:.03em">
+          <button onclick="copySyncToken()">Copy</button>
+        </div>
+        <div class="settings-note">
+          This token is your vault's ID in the cloud. Copy it to any other device and paste below to sync your data across devices.
+        </div>
+      </div>
+      <div class="profile-field">
+        <label>Sync from another device</label>
+        <div class="api-key-wrap">
+          <input type="text" id="p-new-token" placeholder="Paste token from your other device">
+          <button onclick="applySyncToken(document.getElementById('p-new-token').value)">Sync</button>
+        </div>
+      </div>
+      <button class="btn-profile-save" style="margin-top:8px" onclick="syncPull().then(ok=>{renderApp();showToast(ok?'Synced ✓':'Nothing to pull')})">
+        Pull Latest from Cloud
+      </button>
     </div>`;
 }
 
@@ -1230,6 +1328,8 @@ function goBack() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
+  getSyncToken(); // ensure token exists before anything else
+
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
@@ -1246,5 +1346,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Render immediately with local data, then refresh with cloud data
   renderApp();
+  syncPull().then(ok => { if (ok) renderApp(); }).catch(() => {});
 });
